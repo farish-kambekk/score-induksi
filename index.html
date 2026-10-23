@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Live Scoreboard</title>
+<!--
+=====================================================================
+ LIVE SCOREBOARD – standalone, password-only, shared between users
+=====================================================================
+ HOW IT WORKS
+ - Everyone who knows the PASSWORD opens the same scoreboard.
+   (Different password = a different, separate scoreboard.)
+ - Scores are stored in a free Firebase Realtime Database that YOU create.
+ - The person who creates the scoreboard also sets an ADMIN password,
+   used to add games, rename groups/rounds and add round pictures.
+
+ ONE-TIME SETUP (about 5 minutes, free)
+ 1. Go to https://console.firebase.google.com and create a project.
+ 2. Build > Realtime Database > Create database (any region, "locked mode").
+ 3. Open the "Rules" tab, paste this, and click Publish:
+
+    {
+      "rules": {
+        "rooms": { "$room": { ".read": true, ".write": true } },
+        "pics":  { "$room": { ".read": true, ".write": true } }
+      }
+    }
+
+ 4. Copy the database URL shown at the top of the Data tab
+    (looks like https://your-project-default-rtdb.firebaseio.com)
+    and paste it into FIREBASE_DB_URL below.
+ 5. Put this file on any web host (GitHub Pages, Netlify Drop, your own
+    site) and send people the link plus the password.
+
+ If FIREBASE_DB_URL is left empty the app runs in DEMO MODE: it works,
+ but data stays inside one browser only (not shared).
+
+ SECURITY NOTE
+ The password is hashed and used as the secret name of the scoreboard's
+ storage area, so people without it can't find or read it. This is
+ casual protection for events and classrooms, not bank-level security.
+ Use a long, unguessable password. Forgot the admin password? In the
+ Firebase console delete rooms/<your room>/meta/adminHash.
+=====================================================================
+-->
+<style>
+:root{--bg:#f6f5f1;--surface:#fff;--text:#1d1d1b;--muted:#6b6a64;--line:#e3e1d9;--accent:#3b5bdb;--accent-text:#fff;--gold:#e0a800;--silver:#8d96a3;--bronze:#b86b2e;--err:#c92a2a;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#16171a;--surface:#202226;--text:#eeede8;--muted:#9a9a93;--line:#34363c;--accent:#7c93f5;--accent-text:#10131f;--gold:#f2c230;--silver:#aab3c0;--bronze:#d98a4b;--err:#ff7b7b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.4}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:1.6rem;margin:0}
+.sub{color:var(--muted);font-size:.85rem}
+.live{display:inline-flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:#2f9e44}
+.dot.off{background:var(--err)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;border:1px solid var(--line);background:var(--surface);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+button.danger{color:var(--err)}
+.tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:12px}
+.tabs button{white-space:nowrap;flex:none}
+.tabs button.active{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.podium{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:end;margin-bottom:18px}
+.pod{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 8px;text-align:center;min-width:0}
+.pod .medal{font-size:1.6rem}
+.pod .name{font-weight:600;overflow-wrap:anywhere}
+.pod .pts{font-size:1.6rem;font-weight:700}
+.pod.p1{padding-top:22px;padding-bottom:22px;border:2px solid var(--gold)}
+.pod.p2{border-color:var(--silver)}
+.pod.p3{border-color:var(--bronze)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px;align-items:start}
+@media (max-width:780px){.layout{grid-template-columns:minmax(0,1fr)}}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:360px}
+th,td{padding:6px 8px;text-align:center;border-bottom:1px solid var(--line)}
+th{font-size:.8rem;color:var(--muted);font-weight:600}
+td.team,th.team{text-align:left;font-weight:600;position:sticky;left:0;background:var(--surface)}
+td.total{font-weight:700;font-size:1.05rem}
+td.rank{color:var(--muted);width:32px}
+input[type=number],input[type=text],input[type=password]{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:100%}
+td input[type=number]{width:64px;text-align:center}
+.mapcard h3{margin:0 0 8px;font-size:1rem}
+.car{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.car::-webkit-scrollbar{display:none}
+.slide{flex:0 0 100%;scroll-snap-align:center;min-width:0}
+.slide .cap{font-weight:600;margin-bottom:6px;text-align:center}
+.pic{aspect-ratio:4/3;border-radius:8px;border:1px solid var(--line);background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.85rem;text-align:center;overflow:hidden;padding:4px}
+.pic img{width:100%;height:100%;object-fit:contain;cursor:zoom-in}
+.carnav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px}
+.carnav button{padding:4px 12px;font-size:1.2rem;line-height:1}
+.dots{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.dot2{width:10px;height:10px;padding:0;border-radius:50%;background:var(--line);border:none}
+.dot2.on{background:var(--accent)}
+.settings{margin-top:16px}
+.settings h2{margin:0 0 10px;font-size:1.1rem}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.field{display:flex;flex-direction:column;gap:4px;flex:1;min-width:150px}
+.field label{font-size:.8rem;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:12px}
+.prow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.prow .pn{min-width:90px;font-weight:600}
+.prow img{width:48px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
+.notice{color:var(--muted);font-size:.85rem;margin-top:10px}
+.banner{background:var(--surface);border:1px dashed var(--gold);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.85rem}
+.empty{text-align:center;padding:28px 12px;color:var(--muted)}
+.hide{display:none!important}
+.loginbox{max-width:380px;margin:12vh auto 0}
+.loginbox h1{margin-bottom:6px}
+.loginbox .field{margin:14px 0}
+.err{color:var(--err);font-size:.9rem;min-height:1.2em;margin:6px 0}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.lightbox img{max-width:100%;max-height:100%;border-radius:8px}
+@media (max-width:480px){h1{font-size:1.3rem}.pod .pts{font-size:1.2rem}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div class="wrap hide" id="login">
+  <div class="card loginbox">
+    <h1>🏆 Live Scoreboard</h1>
+    <div class="sub">Enter the password you were given to open the scoreboard.</div>
+    <div class="banner hide" id="demoBanner">Demo mode: scores stay in this browser only. Add your Firebase URL to share between devices (see the notes at the top of the file).</div>
+    <div id="stepPw">
+      <div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password" autofocus></div>
+      <div class="err" id="loginErr"></div>
+      <button class="primary" id="enterBtn" style="width:100%">Open scoreboard</button>
+    </div>
+    <div id="stepCreate" class="hide">
+      <p>No scoreboard uses this password yet. Create a new one?</p>
+      <div class="field"><label for="adm">Choose an admin password (for managing games)</label><input type="password" id="adm" autocomplete="new-password"></div>
+      <div class="err" id="createErr"></div>
+      <div class="row"><button class="primary" id="createBtn">Create scoreboard</button><button id="backBtn">Back</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div class="wrap hide" id="app">
+<header>
+  <div>
+    <h1 id="title">Scoreboard</h1>
+    <div class="sub"><span class="live"><span class="dot off" id="dot"></span><span id="status">Connecting…</span></span></div>
+  </div>
+  <div class="btns">
+    <button id="settingsBtn" class="hide">⚙ Game settings</button>
+    <button id="adminBtn">🔒 Admin</button>
+    <button id="logoutBtn">Log out</button>
+  </div>
+</header>
+
+<div class="banner hide" id="appDemo">Demo mode: scores stay in this browser only. Add your Firebase URL to share between devices.</div>
+
+<div class="card hide" id="adminBox" style="margin-bottom:12px">
+  <div class="row">
+    <div class="field"><label for="adminPw">Admin password</label><input type="password" id="adminPw" autocomplete="off"></div>
+    <button class="primary" id="adminGo">Unlock admin</button>
+    <button id="adminCancel">Cancel</button>
+  </div>
+  <div class="err" id="adminErr"></div>
+</div>
+
+<div class="tabs" id="tabs"></div>
+
+<div id="main">
+  <div class="podium" id="podium"></div>
+  <div class="layout">
+    <div class="card">
+      <div class="scroll"><table id="table"></table></div>
+      <div class="notice" id="roNotice"></div>
+    </div>
+    <div class="card mapcard">
+      <h3>🖼 Round pictures</h3>
+      <div class="car" id="car"></div>
+      <div class="carnav"><button id="prevBtn" aria-label="Previous round">‹</button><div class="dots" id="dots"></div><button id="nextBtn" aria-label="Next round">›</button></div>
+      <div class="sub" style="text-align:center;margin-top:6px">Swipe to see each round</div>
+    </div>
+  </div>
+</div>
+<div class="card empty hide" id="empty">
+  <div id="emptyMsg">No games yet.</div>
+  <button class="primary hide" id="firstBtn" style="margin-top:12px">+ Create first game</button>
+</div>
+
+<div class="card settings hide" id="settings">
+  <h2>Game settings</h2>
+  <div class="row">
+    <div class="field"><label for="sGame">Game name</label><input type="text" id="sGame" maxlength="60"></div>
+    <div class="field"><label for="sTeams">Number of groups</label><input type="number" id="sTeams" min="1" max="30"></div>
+    <div class="field"><label for="sRounds">Number of rounds</label><input type="number" id="sRounds" min="1" max="20"></div>
+  </div>
+  <div class="sub" style="margin-bottom:6px">Group names</div>
+  <div class="grid" id="sTeamNames"></div>
+  <div class="sub" style="margin-bottom:6px">Round names</div>
+  <div class="grid" id="sRoundNames"></div>
+  <div class="row">
+    <button class="primary" id="saveBtn">Save</button>
+    <button id="cancelBtn">Close</button>
+  </div>
+  <div class="sub" style="margin:10px 0 6px">Pictures for each round (save any round name changes first)</div>
+  <div id="sPics" style="margin-bottom:12px"></div>
+  <div class="row">
+    <button class="danger" id="resetBtn">Reset scores</button>
+    <button class="danger" id="delBtn">Delete game</button>
+  </div>
+  <div class="notice" id="saveMsg"></div>
+</div>
+</div>
+
+<div class="lightbox hide" id="lightbox"><img id="lbImg" alt=""></div>
+
+<script>
+(function(){
+"use strict";
+/* ============ CONFIG ============ */
+var FIREBASE_DB_URL = "https://induksi-e8716-default-rtdb.asia-southeast1.firebasedatabase.app/";   // e.g. "https://your-project-default-rtdb.firebaseio.com"
+var POLL_MS = 2500;
+/* ================================= */
+
+var $ = function(id){return document.getElementById(id)};
+var DEF = {teams:["Team 1","Team 2","Team 3","Team 4"], rounds:["Round 1","Round 2","Round 3"]};
+var medals = ["🥇","🥈","🥉"];
+
+/* ---------- storage helpers ---------- */
+function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
+function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
+function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
+function ssGet(k){try{return sessionStorage.getItem(k)}catch(e){return null}}
+function ssSet(k,v){try{sessionStorage.setItem(k,v)}catch(e){}}
+function ssDel(k){try{sessionStorage.removeItem(k)}catch(e){}}
+
+/* ---------- backend (Firebase REST or local demo) ---------- */
+function makeBackend(){
+  if(FIREBASE_DB_URL){
+    var base = FIREBASE_DB_URL.replace(/\/+$/,"");
+    var j = function(url,opt){return fetch(url,opt).then(function(r){if(!r.ok) throw new Error("HTTP "+r.status); return r.json()})};
+    var put = function(url,v){return j(url,{method:"PUT",body:JSON.stringify(v)})};
+    return {
+      shared:true,
+      load:function(room){return j(base+"/rooms/"+room+".json")},
+      set:function(room,path,v){return put(base+"/rooms/"+room+"/"+path+".json",v)},
+      del:function(room,path){return j(base+"/rooms/"+room+"/"+path+".json",{method:"DELETE"})},
+      getPic:function(room,id){return j(base+"/pics/"+room+"/"+id+".json")},
+      setPic:function(room,id,v){return put(base+"/pics/"+room+"/"+id+".json",v)},
+      delPic:function(room,id){return j(base+"/pics/"+room+"/"+id+".json",{method:"DELETE"})}
+    };
+  }
+  var KEY="scoreboard_demo_tree";
+  function tree(){try{return JSON.parse(lsGet(KEY)||"{}")}catch(e){return {}}}
+  function save(t){lsSet(KEY,JSON.stringify(t))}
+  function setAt(t,segs,v){var o=t;for(var i=0;i<segs.length-1;i++){o=o[segs[i]]=o[segs[i]]||{}}o[segs[segs.length-1]]=v}
+  function delAt(t,segs){var o=t;for(var i=0;i<segs.length-1;i++){o=o[segs[i]];if(!o)return}delete o[segs[segs.length-1]]}
+  function ok(v){return Promise.resolve(v===undefined?null:v)}
+  return {
+    shared:false,
+    load:function(room){var t=tree();return ok(t.rooms&&t.rooms[room]||null)},
+    set:function(room,path,v){var t=tree();setAt(t,["rooms",room].concat(path.split("/")),v);save(t);return ok()},
+    del:function(room,path){var t=tree();delAt(t,["rooms",room].concat(path.split("/")));save(t);return ok()},
+    getPic:function(room,id){var t=tree();return ok(t.pics&&t.pics[room]&&t.pics[room][id]||null)},
+    setPic:function(room,id,v){var t=tree();setAt(t,["pics",room,id],v);save(t);return ok()},
+    delPic:function(room,id){var t=tree();delAt(t,["pics",room,id]);save(t);return ok()}
+  };
+}
+var backend = makeBackend();
+
+/* ---------- hashing ---------- */
+function fallbackHash(s){
+  var h1=0xdeadbeef,h2=0x41c6ce57;
+  for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677)}
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (h2>>>0).toString(16).padStart(8,"0")+(h1>>>0).toString(16).padStart(8,"0");
+}
+function sha(s){
+  if(window.crypto&&crypto.subtle&&window.TextEncoder){
+    return crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)).then(function(b){
+      return Array.prototype.map.call(new Uint8Array(b),function(x){return x.toString(16).padStart(2,"0")}).join("");
+    });
+  }
+  return Promise.resolve(fallbackHash(s)+fallbackHash(s+"#2")+fallbackHash("#3"+s)+fallbackHash(s+"#4"));
+}
+function roomId(pw){return sha("scoreboard-room:"+pw).then(function(h){return "r"+h})}
+function adminHashOf(pw){return sha("scoreboard-admin:"+pw)}
+
+/* ---------- state ---------- */
+var room = null, data = {}, games = [], sel = null, tableSig = "", lastRaw = "", lastWrite = 0, pollTimer = null, online = true;
+var picCache = {};
+
+function toArr(x){
+  if(Array.isArray(x)) return x.map(function(v){return v==null?"":v});
+  if(x&&typeof x==="object") return Object.keys(x).sort(function(a,b){return a-b}).map(function(k){return x[k]});
+  return [];
+}
+function parseGames(){
+  var g = data.games||{};
+  games = Object.keys(g).map(function(id){
+    var x=g[id]||{}, teams=toArr(x.teams).map(String), rounds=toArr(x.rounds).map(String);
+    return {id:id,name:String(x.name||"Game"),teams:teams.length?teams:DEF.teams,rounds:rounds.length?rounds:DEF.rounds,pics:toArr(x.pics).map(Number),created:x.created||0};
+  }).sort(function(a,b){return a.created-b.created});
+}
+function cur(){for(var i=0;i<games.length;i++) if(games[i].id===sel) return games[i]; return null}
+function isAdmin(){var h=data.meta&&data.meta.adminHash; return !!h && ssGet("sb_admin")===h}
+function score(gid,t,r){var v=(data.scores||{})[gid+"_t"+t+"_r"+r]; return typeof v==="number"?v:null}
+function total(t){var g=cur(),s=0;for(var r=0;r<g.rounds.length;r++){var v=score(g.id,t,r);if(v!==null)s+=v}return s}
+function sig(){var g=cur();return JSON.stringify([sel,g&&g.teams,g&&g.rounds])}
+function wrote(){lastWrite=Date.now()}
+
+/* ---------- views ---------- */
+function show(view){$("login").classList.toggle("hide",view!=="login");$("app").classList.toggle("hide",view!=="app")}
+function setStatus(ok,text){$("dot").className="dot"+(ok?"":" off");$("status").textContent=text}
+
+/* ---------- login ---------- */
+var pendingPw = "", pendingRoom = "";
+function showLogin(){
+  stopPoll(); room=null; data={}; show("login");
+  $("stepPw").classList.remove("hide"); $("stepCreate").classList.add("hide");
+  $("pw").value=""; $("loginErr").textContent=""; $("demoBanner").classList.toggle("hide",backend.shared);
+  setTimeout(function(){$("pw").focus()},0);
+}
+function tryEnter(){
+  var pw=$("pw").value.trim();
+  if(pw.length<4){$("loginErr").textContent="Password must be at least 4 characters.";return}
+  $("loginErr").textContent="Checking…";
+  roomId(pw).then(function(r){
+    return backend.load(r).then(function(d){
+      if(d){lsSet("sb_room",r);enterRoom(r,d)}
+      else{pendingPw=pw;pendingRoom=r;$("loginErr").textContent="";$("stepPw").classList.add("hide");$("stepCreate").classList.remove("hide");$("createErr").textContent="";$("adm").value="";$("adm").focus()}
+    });
+  }).catch(function(){$("loginErr").textContent="Can’t reach the server. Check your connection and try again."});
+}
+function createRoom(){
+  var a=$("adm").value.trim();
+  if(a.length<4){$("createErr").textContent="Admin password must be at least 4 characters.";return}
+  if(a===pendingPw){$("createErr").textContent="Use a different admin password from the scoreboard password.";return}
+  $("createErr").textContent="Creating…";
+  adminHashOf(a).then(function(h){
+    return backend.set(pendingRoom,"meta",{created:Date.now(),adminHash:h}).then(function(){
+      ssSet("sb_admin",h); lsSet("sb_room",pendingRoom);
+      return backend.load(pendingRoom).then(function(d){enterRoom(pendingRoom,d||{meta:{adminHash:h}})});
+    });
+  }).catch(function(){$("createErr").textContent="Could not create the scoreboard. Check your connection and database rules."});
+}
+$("enterBtn").addEventListener("click",tryEnter);
+$("pw").addEventListener("keydown",function(e){if(e.key==="Enter")tryEnter()});
+$("createBtn").addEventListener("click",createRoom);
+$("adm").addEventListener("keydown",function(e){if(e.key==="Enter")createRoom()});
+$("backBtn").addEventListener("click",function(){$("stepCreate").classList.add("hide");$("stepPw").classList.remove("hide");$("pw").focus()});
+$("logoutBtn").addEventListener("click",function(){lsDel("sb_room");ssDel("sb_admin");showLogin()});
+
+/* ---------- admin unlock ---------- */
+$("adminBtn").addEventListener("click",function(){$("adminBox").classList.toggle("hide");$("adminErr").textContent="";$("adminPw").value="";$("adminPw").focus()});
+$("adminCancel").addEventListener("click",function(){$("adminBox").classList.add("hide")});
+function unlock(){
+  var a=$("adminPw").value.trim(); if(!a) return;
+  adminHashOf(a).then(function(h){
+    if(data.meta&&data.meta.adminHash===h){ssSet("sb_admin",h);$("adminBox").classList.add("hide");render()}
+    else $("adminErr").textContent="Wrong admin password.";
+  });
+}
+$("adminGo").addEventListener("click",unlock);
+$("adminPw").addEventListener("keydown",function(e){if(e.key==="Enter")unlock()});
+
+/* ---------- polling ---------- */
+function enterRoom(r,d){
+  room=r; data=d||{}; lastRaw=JSON.stringify(data); sel=null; tableSig=""; picCache={};
+  show("app"); $("appDemo").classList.toggle("hide",backend.shared);
+  parseGames(); pickSel(); render(); setStatus(true,"Live");
+  stopPoll(); pollTimer=setInterval(poll,POLL_MS);
+}
+function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null}}
+function poll(){
+  if(!room) return;
+  backend.load(room).then(function(d){
+    if(!room) return;
+    if(!online){online=true}
+    setStatus(true,backend.shared?"Live":"Demo mode");
+    if(Date.now()-lastWrite<2000) return;
+    if(!d){ lsDel("sb_room"); showLogin(); return }
+    var raw=JSON.stringify(d); if(raw===lastRaw) return;
+    lastRaw=raw; data=d; parseGames(); pickSel(); render();
+  }).catch(function(){online=false;setStatus(false,"Offline – retrying…")});
+}
+function pickSel(){
+  if(cur()) return;
+  var saved=lsGet("sb_sel"); sel=games.some(function(g){return g.id===saved})?saved:(games[0]&&games[0].id)||null;
+}
+
+/* ---------- rendering ---------- */
+function renderTabs(){
+  var box=$("tabs"); box.innerHTML="";
+  games.forEach(function(g){
+    var b=document.createElement("button"); b.textContent=g.name; if(g.id===sel) b.className="active";
+    b.addEventListener("click",function(){selectGame(g.id)}); box.appendChild(b);
+  });
+  if(isAdmin()){var n=document.createElement("button"); n.textContent="+ New game"; n.addEventListener("click",newGame); box.appendChild(n)}
+  box.classList.toggle("hide",!games.length&&!isAdmin());
+}
+function renderPodium(){
+  var g=cur(); if(!g) return;
+  var list=g.teams.map(function(n,i){return {n:n,i:i,t:total(i)}}).sort(function(a,b){return b.t-a.t||a.i-b.i});
+  var top=list.slice(0,3), order=top.length>=3?[1,0,2]:top.map(function(_,i){return i});
+  var el=$("podium"); el.innerHTML=""; el.style.gridTemplateColumns="repeat("+top.length+",1fr)";
+  order.forEach(function(idx){
+    var d=document.createElement("div"); d.className="pod p"+(idx+1);
+    var m=document.createElement("div"); m.className="medal"; m.textContent=medals[idx];
+    var n=document.createElement("div"); n.className="name"; n.textContent=top[idx].n;
+    var p=document.createElement("div"); p.className="pts"; p.textContent=top[idx].t;
+    d.append(m,n,p); el.appendChild(d);
+  });
+}
+function buildTable(){
+  var g=cur(); tableSig=sig();
+  var t=$("table"); t.innerHTML="";
+  var thead=document.createElement("thead"), hr=document.createElement("tr");
+  ["#","Group"].concat(g.rounds).concat(["Total"]).forEach(function(h,i){
+    var th=document.createElement("th"); th.textContent=h; if(i===1) th.className="team"; hr.appendChild(th);
+  });
+  thead.appendChild(hr); t.appendChild(thead);
+  var tb=document.createElement("tbody");
+  g.teams.forEach(function(name,ti){
+    var tr=document.createElement("tr");
+    var rk=document.createElement("td"); rk.className="rank"; rk.id="rk"+ti; tr.appendChild(rk);
+    var tn=document.createElement("td"); tn.className="team"; tn.textContent=name; tr.appendChild(tn);
+    g.rounds.forEach(function(_,ri){
+      var td=document.createElement("td"), inp=document.createElement("input");
+      inp.type="number"; inp.step="any"; inp.inputMode="decimal"; inp.id="in_"+ti+"_"+ri;
+      inp.setAttribute("aria-label",name+" – "+g.rounds[ri]);
+      inp.addEventListener("change",function(){saveScore(ti,ri,inp)});
+      td.appendChild(inp); tr.appendChild(td);
+    });
+    var tot=document.createElement("td"); tot.className="total"; tot.id="tot"+ti; tr.appendChild(tot);
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+}
+function updateValues(){
+  var g=cur(); if(!g) return;
+  g.teams.forEach(function(_,ti){
+    g.rounds.forEach(function(_,ri){
+      var inp=$("in_"+ti+"_"+ri); if(!inp||document.activeElement===inp) return;
+      var v=score(g.id,ti,ri); inp.value=v===null?"":v;
+    });
+    var tt=$("tot"+ti); if(tt) tt.textContent=total(ti);
+  });
+  g.teams.map(function(_,i){return {i:i,t:total(i)}}).sort(function(a,b){return b.t-a.t||a.i-b.i})
+    .forEach(function(r,pos){var c=$("rk"+r.i); if(c) c.textContent=pos+1});
+}
+function render(){
+  var g=cur(), admin=isAdmin();
+  renderTabs();
+  $("main").classList.toggle("hide",!g);
+  $("empty").classList.toggle("hide",!!g);
+  $("firstBtn").classList.toggle("hide",!admin);
+  $("emptyMsg").textContent=admin?"No games yet. Create one to get started.":"No games yet. Ask the admin to set one up.";
+  $("settingsBtn").classList.toggle("hide",!(admin&&g));
+  $("adminBtn").classList.toggle("hide",admin);
+  if(admin) $("adminBox").classList.add("hide");
+  if(!g){$("title").textContent="Scoreboard";document.title="Scoreboard";$("settings").classList.add("hide");return}
+  $("title").textContent=g.name; document.title=g.name+" – Scoreboard";
+  if(sig()!==tableSig) buildTable();
+  updateValues(); renderPodium(); renderCar(g); renderPicRows();
+}
+function selectGame(id){
+  sel=id; lsSet("sb_sel",id); tableSig="";
+  if(!$("settings").classList.contains("hide")) fillSettings();
+  render();
+}
+
+/* ---------- pictures ---------- */
+function loadPic(gid,i,v,img){
+  var id=gid+"_"+i, c=picCache[id];
+  if(c&&c.v===v){img.src=c.data;return}
+  backend.getPic(room,id).then(function(d){if(typeof d==="string"){picCache[id]={v:v,data:d};img.src=d}}).catch(function(){});
+}
+function openLightbox(src){$("lbImg").src=src;$("lightbox").classList.remove("hide")}
+$("lightbox").addEventListener("click",function(){this.classList.add("hide")});
+function renderCar(g){
+  var car=$("car"), sg=JSON.stringify([g.id,g.rounds,g.pics]);
+  if(car.dataset.sig===sg) return;
+  car.dataset.sig=sg; car.innerHTML="";
+  g.rounds.forEach(function(r,i){
+    var sl=document.createElement("div"); sl.className="slide";
+    var cap=document.createElement("div"); cap.className="cap"; cap.textContent=r;
+    var box=document.createElement("div"); box.className="pic";
+    if(g.pics[i]){var im=document.createElement("img"); im.alt=r; loadPic(g.id,i,g.pics[i],im); im.addEventListener("click",function(){openLightbox(im.src)}); box.appendChild(im)}
+    else box.textContent="No picture for this round yet";
+    sl.append(cap,box); car.appendChild(sl);
+  });
+  var d=$("dots"); d.innerHTML="";
+  g.rounds.forEach(function(r,i){var b=document.createElement("button"); b.className="dot2"; b.setAttribute("aria-label","Go to "+r); b.addEventListener("click",function(){goSlide(i)}); d.appendChild(b)});
+  car.scrollLeft=0; markDot();
+}
+function curSlide(){var c=$("car"); return c.clientWidth?Math.round(c.scrollLeft/c.clientWidth):0}
+function goSlide(i){var c=$("car"); i=Math.max(0,Math.min(c.children.length-1,i)); c.scrollTo({left:i*c.clientWidth,behavior:"smooth"})}
+function markDot(){var i=curSlide(); Array.prototype.forEach.call($("dots").children,function(b,k){b.classList.toggle("on",k===i)})}
+$("car").addEventListener("scroll",markDot);
+$("prevBtn").addEventListener("click",function(){goSlide(curSlide()-1)});
+$("nextBtn").addEventListener("click",function(){goSlide(curSlide()+1)});
+
+function shrink(file){
+  return new Promise(function(resolve,reject){
+    var url=URL.createObjectURL(file), img=new Image();
+    img.onload=function(){
+      var max=900, s=Math.min(1,max/Math.max(img.width,img.height));
+      var c=document.createElement("canvas"); c.width=Math.round(img.width*s); c.height=Math.round(img.height*s);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg",0.78));
+    };
+    img.onerror=function(){URL.revokeObjectURL(url);reject(new Error("bad image"))};
+    img.src=url;
+  });
+}
+function renderPicRows(force){
+  var g=cur(), box=$("sPics"); if(!g||(!force&&$("settings").classList.contains("hide"))) return;
+  var sg=JSON.stringify([g.id,g.rounds,g.pics]);
+  if(!force&&box.dataset.sig===sg) return;
+  box.dataset.sig=sg; box.innerHTML="";
+  g.rounds.forEach(function(r,i){
+    var row=document.createElement("div"); row.className="prow";
+    var n=document.createElement("span"); n.className="pn"; n.textContent=r; row.appendChild(n);
+    if(g.pics[i]){var im=document.createElement("img"); im.alt=""; loadPic(g.id,i,g.pics[i],im); row.appendChild(im)}
+    var f=document.createElement("input"); f.type="file"; f.accept="image/*"; f.style.width="auto"; f.setAttribute("aria-label","Picture for "+r);
+    f.addEventListener("change",function(){
+      var file=f.files[0]; if(!file) return;
+      $("saveMsg").textContent="Uploading picture for "+r+"…";
+      shrink(file).then(function(dataUrl){
+        var v=Date.now(); wrote();
+        return backend.setPic(room,g.id+"_"+i,dataUrl).then(function(){
+          picCache[g.id+"_"+i]={v:v,data:dataUrl};
+          var gg=cur(); var pics=gg.rounds.map(function(_,k){return gg.pics[k]||0}); pics[i]=v;
+          return saveGame(Object.assign({},gg,{pics:pics}));
+        });
+      }).then(function(){$("saveMsg").textContent="Picture added ✓"})
+        .catch(function(){$("saveMsg").textContent="Could not upload that picture."});
+    });
+    row.appendChild(f);
+    if(g.pics[i]){var rm=document.createElement("button"); rm.textContent="Remove"; rm.addEventListener("click",function(){
+      var gg=cur(), pics=gg.rounds.map(function(_,k){return gg.pics[k]||0}); pics[i]=0;
+      saveGame(Object.assign({},gg,{pics:pics})).then(function(){return backend.delPic(room,gg.id+"_"+i)})
+        .then(function(){$("saveMsg").textContent="Picture removed."}).catch(function(){$("saveMsg").textContent="Could not remove."});
+    }); row.appendChild(rm)}
+    box.appendChild(row);
+  });
+}
+
+/* ---------- writes ---------- */
+function saveGame(g){
+  var obj={name:g.name,teams:g.teams,rounds:g.rounds,pics:g.pics,created:g.created};
+  wrote();
+  return backend.set(room,"games/"+g.id,obj).then(function(){
+    data.games=data.games||{}; data.games[g.id]=obj; lastRaw=JSON.stringify(data);
+    parseGames(); render();
+  });
+}
+function saveScore(ti,ri,inp){
+  var g=cur(), k=g.id+"_t"+ti+"_r"+ri, raw=inp.value.trim(); wrote();
+  var p;
+  data.scores=data.scores||{};
+  if(raw===""){delete data.scores[k]; p=backend.del(room,"scores/"+k)}
+  else{var n=Number(raw); data.scores[k]=n; p=backend.set(room,"scores/"+k,n)}
+  lastRaw=JSON.stringify(data); updateValues(); renderPodium();
+  p.then(function(){inp.style.borderColor="";inp.title=""}).catch(function(){inp.style.borderColor="#c92a2a";inp.title="Could not save – check your connection"});
+}
+function newGame(){
+  var id="g"+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+  var g={id:id,name:"Game "+(games.length+1),teams:DEF.teams.slice(),rounds:DEF.rounds.slice(),pics:[0,0,0],created:Date.now()};
+  saveGame(g).then(function(){selectGame(id);$("settings").classList.remove("hide");fillSettings()}).catch(function(){alert("Could not create the game.")});
+}
+$("firstBtn").addEventListener("click",newGame);
+
+/* ---------- settings ---------- */
+function nameInputs(id,arr,n,prefix){
+  var box=$(id), old=Array.prototype.map.call(box.querySelectorAll("input"),function(i){return i.value});
+  box.innerHTML="";
+  for(var i=0;i<n;i++){
+    var inp=document.createElement("input"); inp.type="text"; inp.maxLength=40;
+    inp.value=old[i]!==undefined?old[i]:(arr[i]!==undefined?arr[i]:prefix+(i+1));
+    box.appendChild(inp);
+  }
+}
+function fillSettings(){
+  var g=cur(); if(!g) return;
+  $("sGame").value=g.name; $("sTeams").value=g.teams.length; $("sRounds").value=g.rounds.length;
+  $("sTeamNames").innerHTML=""; $("sRoundNames").innerHTML="";
+  nameInputs("sTeamNames",g.teams,g.teams.length,"Team ");
+  nameInputs("sRoundNames",g.rounds,g.rounds.length,"Round ");
+  renderPicRows(true); $("saveMsg").textContent="";
+}
+function clamp(v,lo,hi){v=Math.floor(Number(v))||lo;return Math.max(lo,Math.min(hi,v))}
+function names(id,prefix){return Array.prototype.map.call($(id).querySelectorAll("input"),function(i,x){return i.value.trim()||prefix+(x+1)})}
+$("sTeams").addEventListener("change",function(){nameInputs("sTeamNames",cur().teams,clamp(this.value,1,30),"Team ")});
+$("sRounds").addEventListener("change",function(){nameInputs("sRoundNames",cur().rounds,clamp(this.value,1,20),"Round ")});
+$("settingsBtn").addEventListener("click",function(){$("settings").classList.toggle("hide");if(!$("settings").classList.contains("hide"))fillSettings()});
+$("cancelBtn").addEventListener("click",function(){$("settings").classList.add("hide")});
+$("saveBtn").addEventListener("click",function(){
+  var g=cur(); if(!g) return;
+  var rounds=names("sRoundNames","Round ");
+  var ng={id:g.id,name:$("sGame").value.trim()||"Game",teams:names("sTeamNames","Team "),rounds:rounds,pics:rounds.map(function(_,i){return g.pics[i]||0}),created:g.created};
+  $("saveMsg").textContent="Saving…";
+  saveGame(ng).then(function(){$("saveMsg").textContent="Saved ✓"}).catch(function(){$("saveMsg").textContent="Could not save. Check your connection."});
+});
+function scoreKeys(gid){return Object.keys(data.scores||{}).filter(function(k){return k.indexOf(gid+"_")===0})}
+function clearScores(gid){
+  var keys=scoreKeys(gid); wrote();
+  return keys.reduce(function(p,k){return p.then(function(){delete data.scores[k];return backend.del(room,"scores/"+k)})},Promise.resolve())
+    .then(function(){lastRaw=JSON.stringify(data);tableSig="";render()});
+}
+$("resetBtn").addEventListener("click",function(){
+  var g=cur(); if(!g||!confirm("Delete every score in this game? This cannot be undone.")) return;
+  $("saveMsg").textContent="Clearing…";
+  clearScores(g.id).then(function(){$("saveMsg").textContent="Scores cleared."}).catch(function(){$("saveMsg").textContent="Could not clear all scores."});
+});
+$("delBtn").addEventListener("click",function(){
+  var g=cur(); if(!g||!confirm("Delete the game “"+g.name+"” and all its scores? This cannot be undone.")) return;
+  $("saveMsg").textContent="Deleting…";
+  clearScores(g.id).then(function(){
+    return Promise.all(g.rounds.map(function(_,i){return backend.delPic(room,g.id+"_"+i)}));
+  }).then(function(){wrote();return backend.del(room,"games/"+g.id)}).then(function(){
+    delete data.games[g.id]; lastRaw=JSON.stringify(data); sel=null; parseGames(); pickSel();
+    $("settings").classList.add("hide"); render();
+  }).catch(function(){$("saveMsg").textContent="Could not delete the game."});
+});
+
+/* ---------- start ---------- */
+var savedRoom=lsGet("sb_room");
+if(savedRoom){
+  show("app"); setStatus(false,"Connecting…");
+  backend.load(savedRoom).then(function(d){if(d) enterRoom(savedRoom,d); else{lsDel("sb_room");showLogin()}})
+    .catch(function(){lsDel("sb_room");showLogin()});
+} else showLogin();
+})();
+</script>
+</body>
+</html>
